@@ -31,3 +31,29 @@ build/
 
 ### VS Code ###
 .vscode/
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Maven
+target/
+
+# Gradle
+.gradle/
+build/
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+*.env
+
+# Local configuration containing secrets
+application-local.properties
+application-prod.properties
+
+# OS files
+.DS_Store
+Thumbs.db
