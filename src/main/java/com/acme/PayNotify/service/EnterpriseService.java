@@ -1,0 +1,228 @@
+/*
+ * File: EnterpriseService.java
+ * Created: 2026-04-22
+ * Author: Akshay Athavale
+ * Use: Contains business logic used by PayNotify API and WebSocket flows.
+ */
+package com.acme.PayNotify.service;
+
+import com.acme.PayNotify.dto.CreateEnterpriseRequest;
+import com.acme.PayNotify.dto.CreateEnterpriseResponse;
+import com.acme.PayNotify.dto.DepartmentResponse;
+import com.acme.PayNotify.dto.EnterpriseValidationResponse;
+import com.acme.PayNotify.entity.EnterpriseMaster;
+import com.acme.PayNotify.repository.EnterpriseMasterRepository;
+import com.acme.PayNotify.security.JwtService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Service
+public class EnterpriseService {
+
+    private static final String DEPARTMENT_PADM = "PADM";
+    private static final String DEPARTMENT_INFINITY = "INFINITY";
+    private static final String DEPARTMENT_INSIGHT = "INSIGHT";
+
+    @Autowired
+    private EnterpriseMasterRepository enterpriseMasterRepository;
+
+    @Autowired
+    private JwtService jwtService;
+
+    public List<DepartmentResponse> getDepartments() {
+        return List.of(
+                new DepartmentResponse(DEPARTMENT_PADM, 1),
+                new DepartmentResponse(DEPARTMENT_INFINITY, 2),
+                new DepartmentResponse(DEPARTMENT_INSIGHT, 3)
+        );
+    }
+
+    public CreateEnterpriseResponse createEnterprise(CreateEnterpriseRequest request) {
+        if (request == null) {
+            throw new RuntimeException("Create enterprise request is required");
+        }
+
+        if (request.getEnterpriseCode() == null || request.getEnterpriseCode().trim().isEmpty()) {
+            throw new RuntimeException("Enterprise code is required");
+        }
+
+        if (request.getEnterpriseName() == null || request.getEnterpriseName().trim().isEmpty()) {
+            throw new RuntimeException("Enterprise name is required");
+        }
+
+        String enterpriseCode = request.getEnterpriseCode().trim().toUpperCase();
+        if (enterpriseMasterRepository.existsByEnterpriseCode(enterpriseCode)) {
+            throw new RuntimeException("Enterprise code already exists");
+        }
+
+        DepartmentInfo departmentInfo = resolveDepartment(request.getDepartment(), request.getDepartmentCode());
+
+        EnterpriseMaster enterprise = new EnterpriseMaster();
+        enterprise.setEnterpriseCode(enterpriseCode);
+        enterprise.setEnterpriseName(request.getEnterpriseName().trim());
+        enterprise.setDepartment(departmentInfo.department());
+        enterprise.setDepartmentCode(departmentInfo.departmentCode());
+        enterprise.setIsActive(true);
+       // enterprise.setLiveFrom(request.getLiveFrom());
+        enterprise.setLiveFrom(LocalDateTime.now());
+        enterprise.setCompCode(1);
+        enterprise.setTenantCode(1);
+
+        enterprise = enterpriseMasterRepository.save(enterprise);
+
+        CreateEnterpriseResponse response = new CreateEnterpriseResponse();
+        response.setId(enterprise.getId());
+        response.setEnterpriseCode(enterprise.getEnterpriseCode());
+        response.setEnterpriseName(enterprise.getEnterpriseName());
+        response.setDepartment(enterprise.getDepartment());
+        response.setDepartmentCode(enterprise.getDepartmentCode());
+        response.setIsActive(enterprise.getIsActive());
+        response.setLiveFrom(enterprise.getLiveFrom());
+        response.setCreatedAt(enterprise.getCreatedAt());
+
+        return response;
+    }
+
+    private DepartmentInfo resolveDepartment(String department, Integer departmentCode) {
+        if ((department == null || department.trim().isEmpty()) && departmentCode == null) {
+            throw new RuntimeException("Department or department code is required");
+        }
+
+        DepartmentInfo resolvedFromDepartment = null;
+        DepartmentInfo resolvedFromCode = null;
+
+        if (department != null && !department.trim().isEmpty()) {
+            resolvedFromDepartment = resolveDepartmentByName(department.trim().toUpperCase());
+        }
+
+        if (departmentCode != null) {
+            resolvedFromCode = resolveDepartmentByCode(departmentCode);
+        }
+
+        if (resolvedFromDepartment != null && resolvedFromCode != null
+                && !resolvedFromDepartment.equals(resolvedFromCode)) {
+            throw new RuntimeException("Department and department code do not match");
+        }
+
+        return resolvedFromDepartment != null ? resolvedFromDepartment : resolvedFromCode;
+    }
+
+    private DepartmentInfo resolveDepartmentByName(String department) {
+        switch (department) {
+            case DEPARTMENT_PADM:
+                return new DepartmentInfo(DEPARTMENT_PADM, 1);
+            case DEPARTMENT_INFINITY:
+                return new DepartmentInfo(DEPARTMENT_INFINITY, 2);
+            case DEPARTMENT_INSIGHT:
+                return new DepartmentInfo(DEPARTMENT_INSIGHT, 3);
+            default:
+                throw new RuntimeException("Invalid department. Allowed values are PADM, INFINITY or INSIGHT");
+        }
+    }
+
+    private DepartmentInfo resolveDepartmentByCode(Integer departmentCode) {
+        switch (departmentCode) {
+            case 1:
+                return new DepartmentInfo(DEPARTMENT_PADM, 1);
+            case 2:
+                return new DepartmentInfo(DEPARTMENT_INFINITY, 2);
+            case 3:
+                return new DepartmentInfo(DEPARTMENT_INSIGHT, 3);
+            default:
+                throw new RuntimeException("Invalid department code. Allowed values are 1, 2 or 3");
+        }
+    }
+
+    private void populateEnterpriseDetails(EnterpriseValidationResponse response, EnterpriseMaster enterprise) {
+        response.setEnterpriseCode(enterprise.getEnterpriseCode());
+        response.setEnterpriseName(enterprise.getEnterpriseName());
+        response.setDepartment(enterprise.getDepartment());
+        response.setDepartmentCode(enterprise.getDepartmentCode());
+    }
+
+    public EnterpriseValidationResponse validateEnterprise(String enterpriseCode) {
+        EnterpriseValidationResponse response = new EnterpriseValidationResponse();
+
+        if (enterpriseCode == null || enterpriseCode.trim().isEmpty()) {
+            response.setValid(false);
+            response.setStatus("INVALID_REQUEST");
+            response.setMessage("Enterprise code is required");
+            return response;
+        }
+
+        String normalizedEnterpriseCode = enterpriseCode.trim().toUpperCase();
+
+        EnterpriseMaster enterprise = enterpriseMasterRepository
+                .findByEnterpriseCode(normalizedEnterpriseCode)
+                .orElse(null);
+
+        if (enterprise == null) {
+            response.setValid(false);
+            response.setEnterpriseCode(normalizedEnterpriseCode);
+            response.setStatus("NOT_FOUND");
+            response.setMessage("Enterprise not found");
+            return response;
+        }
+
+        if (enterprise.getIsActive() == null || !enterprise.getIsActive()) {
+            response.setValid(false);
+            populateEnterpriseDetails(response, enterprise);
+            response.setStatus("INACTIVE");
+            response.setMessage("Enterprise is inactive");
+            return response;
+        }
+
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        if (enterprise.getLiveFrom() != null && enterprise.getLiveFrom().isAfter(now.toLocalDateTime())) {
+            response.setValid(false);
+            populateEnterpriseDetails(response, enterprise);
+            response.setStatus("NOT_LIVE");
+            response.setMessage("Enterprise is not live yet");
+            return response;
+        }
+
+        response.setValid(true);
+        populateEnterpriseDetails(response, enterprise);
+        response.setStatus("VALID");
+        response.setMessage("Enterprise validated successfully");
+        JwtService.TokenResponse token = jwtService.createToken(
+                normalizedEnterpriseCode,
+                normalizedEnterpriseCode,
+                "WEB_CASHIER",
+                "WEB"
+        );
+        response.setToken(token.token());
+        response.setTokenExpiresAt(token.expiresAt());
+        response.setTokenType("Bearer");
+
+        return response;
+    }
+
+    public EnterpriseMaster getValidatedEnterprise(String enterpriseCode) {
+        if (enterpriseCode == null || enterpriseCode.trim().isEmpty()) {
+            throw new RuntimeException("Enterprise code is required");
+        }
+
+        EnterpriseMaster enterprise = enterpriseMasterRepository
+                .findByEnterpriseCode(enterpriseCode.trim().toUpperCase())
+                .orElseThrow(() -> new RuntimeException("Enterprise not found"));
+
+        if (enterprise.getIsActive() == null || !enterprise.getIsActive()) {
+            throw new RuntimeException("Enterprise is inactive");
+        }
+
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        if (enterprise.getLiveFrom() != null && enterprise.getLiveFrom().isAfter(now.toLocalDateTime())) {
+            throw new RuntimeException("Enterprise is not live yet");
+        }
+
+        return enterprise;
+    }
+
+    private record DepartmentInfo(String department, Integer departmentCode) {
+    }
+}

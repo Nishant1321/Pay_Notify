@@ -1,0 +1,856 @@
+<!--
+File: CHANGE_REPORT.md
+Created: 2026-06-25
+Author: Akshay Athavale
+Use: Documents PayNotify API, design, or change details for developers and AI agents.
+-->
+
+# PayNotify Change Report
+
+This file is the running report for application changes. Add every new change at the top with the current date and time, followed by affected files, API request/response changes, database changes, validation behavior, and verification results.
+
+## 2026-07-27 11:45:00 IST - Manual Confirmation Fallback API and Timestamp Restore
+
+### Summary
+
+Restored payment timestamp fields to `java.sql.Timestamp`, added Hibernate/JPA timestamp lifecycle handling, tightened notification dedupe for rapid messages, verified PhonePe queue behavior, and added a manual confirmation fallback API for both Google Pay and PhonePe when no notification reaches the backend within 3 minutes.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/controller/PaymentPhonePeController.java`
+- `src/main/java/com/acme/PayNotify/dto/ManualPaymentConfirmRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/PhonePeManualConfirmRequest.java`
+- `src/main/java/com/acme/PayNotify/entity/EnterpriseMaster.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentNotificationLog.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentRequest.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentTransaction.java`
+- `src/main/java/com/acme/PayNotify/entity/UserDevice.java`
+- `src/main/java/com/acme/PayNotify/service/DeviceRegistrationService.java`
+- `src/main/java/com/acme/PayNotify/service/EnterpriseService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentWebSocketService.java`
+- `src/main/resources/application.properties`
+- `src/test/java/com/acme/PayNotify/service/PaymentServiceTest.java`
+- `src/test/java/com/acme/PayNotify/service/PaymentWebSocketServiceTest.java`
+- `API_Documentation.md`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- `createdAt`, `updatedAt`, `registeredAt`, and log creation timestamps are now managed by Hibernate timestamp annotations.
+- `paidAt`, `confirmedAt`, and notification receive fallback time are managed by JPA lifecycle callbacks.
+- PhonePe same-enterprise same-amount queue flow is covered for multiple cashiers and sequential messages.
+- Notification dedupe now uses millisecond timestamp precision instead of minute rounding, so rapid legitimate Google Pay or PhonePe notifications do not collapse.
+- Manual fallback confirmation is available for both Google Pay and PhonePe after the configured 3-minute wait from QR generation.
+- Manual fallback confirmation publishes `PAYMENT_SUCCESS` through the normal payment update path, including `/topic/payment/{paymentId}`, `/topic/terminal/{terminalId}`, and `/topic/enterprise/{enterpriseCode}/payments`.
+
+### API Changes
+
+New generic fallback endpoint:
+
+```http
+POST /api/payments/{paymentId}/manual-confirm
+```
+
+Request body:
+
+```json
+{
+  "utr": "MANUAL-UTR-1",
+  "payerName": "Manual Payer",
+  "reason": "Owner confirmed by phone"
+}
+```
+
+PhonePe compatibility alias:
+
+```http
+POST /api/payments/{paymentId}/phonepe/manual-confirm
+```
+
+Fallback config:
+
+```properties
+payment.manual-confirm-fallback-minutes=3
+```
+
+### Validation Behavior
+
+- Manual fallback is allowed only for `WAITING` or `PENDING` payments.
+- Manual fallback is blocked before the fallback window.
+- Manual fallback is blocked if the payment is expired.
+- Manual fallback is blocked when a PhonePe notification confirmation is already open; clients must use `/phonepe/confirm` with `notificationId` in that case.
+
+### Database Changes
+
+No schema changes.
+
+### Verification
+
+Ran:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw -Dtest=PaymentServiceTest,NotificationParserServiceTest,PaymentWebSocketServiceTest test
+```
+
+Result: `Tests run: 24, Failures: 0, Errors: 0, Skipped: 0`.
+
+## 2026-07-10 14:45:00 IST - Java Time Migration, Backend Cashier Fields, and Payment Enums
+
+### Summary
+
+Updated payment date-time fields to use Java `LocalDateTime`, moved cashier/branch/session assignment fully to the backend, centralized payment flow hardcoded strings into enums, added FIFO queue handling for same-enterprise same-amount PhonePe notifications, and tightened Google Pay auto-verification.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/entity/EnterpriseMaster.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentNotificationLog.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentRequest.java`
+- `src/main/java/com/acme/PayNotify/entity/PaymentTransaction.java`
+- `src/main/java/com/acme/PayNotify/entity/UserDevice.java`
+- `src/main/java/com/acme/PayNotify/dto/CreateEnterpriseRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/CreateEnterpriseResponse.java`
+- `src/main/java/com/acme/PayNotify/dto/GenerateQrRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/PaymentNotificationRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/PaymentStatusResponse.java`
+- `src/main/java/com/acme/PayNotify/dto/PhonePeConfirmRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/PhonePeRejectRequest.java`
+- `src/main/java/com/acme/PayNotify/repository/PaymentRequestRepository.java`
+- `src/main/java/com/acme/PayNotify/repository/PaymentTransactionRepository.java`
+- `src/main/java/com/acme/PayNotify/service/DeviceRegistrationService.java`
+- `src/main/java/com/acme/PayNotify/service/EnterpriseService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentWebSocketService.java`
+- `src/main/java/com/acme/PayNotify/type/PaymentApp.java`
+- `src/main/java/com/acme/PayNotify/type/PaymentEventType.java`
+- `src/main/java/com/acme/PayNotify/type/PaymentStatus.java`
+- `src/test/java/com/acme/PayNotify/service/PaymentServiceTest.java`
+
+### Behavior Changes
+
+- Replaced entity and DTO `java.sql.Timestamp` date-time fields with `LocalDateTime`.
+- Updated service date-time logic to use `LocalDateTime.now()`, `plus`, `minus`, `isBefore`, and `isAfter`.
+- QR generation no longer exposes `cashierId`, `cashierSessionId`, or `branchId` in the request DTO; these values are generated and stored by the backend.
+- Backend now assigns `cashierId` from the terminal device, creates a `CS-...` cashier session id, and derives `branchId` from enterprise metadata.
+- PhonePe confirm/reject request DTOs no longer expose `cashierId`; confirmation uses the backend-stored payment cashier id.
+- Payment statuses, app names, and websocket event types are centralized in enums while preserving the same database/API string values.
+- PhonePe notifications for the same enterprise and amount now follow first-come-first-served behavior.
+- If a same-amount PhonePe confirmation is already open, the next PhonePe notification is stored as `PHONEPE_QUEUED` instead of overwriting the current candidate windows.
+- After the current PhonePe confirmation session is completed, remaining same-amount waiting payment windows receive the oldest queued PhonePe notification.
+- Google Pay auto-verification now requires the notification amount to exactly match the payment amount.
+- Google Pay notifications no longer auto-verify expired payment requests; expired matched attempts are moved to `EXPIRED` and the notification returns `PAYMENT_EXPIRED`.
+
+### API Changes
+
+`POST /api/payment/qr/generate` clients should not send these fields anymore:
+
+```json
+{
+  "cashierId": 10,
+  "cashierSessionId": "session-abc",
+  "branchId": 1
+}
+```
+
+PhonePe confirm request only needs `notificationId`. Backend confirmation uses the cashier id stored on the payment:
+
+```json
+{
+  "notificationId": 501
+}
+```
+
+PhonePe reject request now only needs:
+
+```json
+{
+  "notificationId": 501,
+  "reason": "Not my customer"
+}
+```
+
+### Database Changes
+
+No schema changes. Existing timestamp/datetime columns continue to store the same logical values through JPA `LocalDateTime` mapping.
+
+### Verification
+
+Ran:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result: `Tests run: 14, Failures: 0, Errors: 0, Skipped: 0`.
+
+## 2026-07-01 00:00:00 IST - Restrict PhonePe Confirmation Prompt to Matched Amount Cashier
+
+### Summary
+
+Stopped PhonePe confirmation-required websocket prompts from being sent on the enterprise-wide payments topic. PhonePe matching still selects active same-enterprise, same-amount payment requests, and the confirm/reject prompt is delivered to each matched `/topic/payment/{paymentId}` cashier window and `/topic/terminal/{terminalId}` terminal stream.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/service/PaymentWebSocketService.java`
+- `src/test/java/com/acme/PayNotify/service/PaymentWebSocketServiceTest.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- `PHONEPE_PAYMENT_CONFIRMATION_REQUIRED` is no longer broadcast to `/topic/enterprise/{enterpriseCode}/payments`.
+- `PHONEPE_PAYMENT_CONFIRMATION_REQUIRED` is sent to `/topic/payment/{paymentId}` and `/topic/terminal/{terminalId}` for each matched candidate.
+- Cashiers whose active payment amount does not match the PhonePe notification should no longer receive the confirmation prompt through the enterprise feed.
+- Final payment status updates still use the existing payment, terminal, and enterprise topics.
+
+### Verification
+
+Ran:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result: `Tests run: 13, Failures: 0, Errors: 0, Skipped: 0`.
+
+## 2026-06-30 14:35:00 IST - Disable Hibernate Auto Schema Update on Startup
+
+### Summary
+
+Changed application startup to skip Hibernate `ddl-auto=update` schema synchronization. Startup was stalling after JPA initialization against the remote MySQL 5.7 database and the process was being killed before the app completed boot.
+
+### Affected Files
+
+- `src/main/resources/application.properties`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- Spring Boot no longer attempts to inspect/update the database schema on every server startup.
+- Database changes must be applied explicitly with the SQL migration scripts before running code that depends on new columns/indexes.
+
+### Verification
+
+Ran:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 timeout 25s ./mvnw spring-boot:run
+```
+
+Result: server reached `Started PayNotifyApplication` before the timeout stopped the verification run.
+
+## 2026-06-30 12:45:00 IST - PhonePe Multi-Cashier Confirmation Routing
+
+### Summary
+
+Updated PhonePe assisted verification so a PhonePe notification received on one Android device can be offered to every active same-enterprise, same-amount payment request window. This supports multiple cashier PCs under one enterprise when the notification arrives on an owner device or another shared device.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/repository/PaymentRequestRepository.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentWebSocketService.java`
+- `src/test/java/com/acme/PayNotify/service/PaymentServiceTest.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- PhonePe matching now finds active same-enterprise, same-amount QR requests inside the valid notification time window.
+- A matching PhonePe notification is published to all candidate `/topic/payment/{paymentId}` windows and `/topic/terminal/{terminalId}` streams.
+- Payment updates are also published on `/topic/enterprise/{enterpriseCode}/payments`.
+- Confirming from one cashier claims the notification for that payment and releases the other candidate payment windows back to waiting/expired.
+- Rejecting from one cashier only removes that cashier payment request from the candidate list; remaining cashier windows can still confirm the same notification.
+- Confirmation validates same enterprise and amount instead of requiring the notification device terminal to match the cashier payment terminal.
+
+### Verification
+
+Ran:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result: `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`.
+
+## 2026-06-27 00:00:00 IST - PhonePe Web Confirmation Polling Fields
+
+### Summary
+
+Updated the PhonePe assisted verification flow so the cashier web screen can display and submit Confirm / Reject actions even when websocket details are not available and the web client is using polling.
+
+Android remains notification-only for PhonePe. Android should not show Confirm / Reject buttons. Cashier confirmation belongs on the web screen.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/dto/PaymentStatusResponse.java`
+- `src/main/java/com/acme/PayNotify/dto/PaymentNotificationResponse.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentService.java`
+- `src/main/java/com/acme/PayNotify/service/PaymentWebSocketService.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- `PHONEPE_PAYMENT_CONFIRMATION_REQUIRED` websocket event is sent to `/topic/payment/{paymentId}` for the cashier web screen and `/topic/terminal/{terminalId}` for terminal-level listeners.
+- Android terminal topic `/topic/terminal/{terminalId}` can receive the PhonePe confirmation-required event when the terminal has a matched candidate payment.
+- Final payment success/reject status updates still go to both web and Android terminal topics.
+- `GET /api/payment/status/{paymentId}` now returns the PhonePe confirmation details required by the web screen.
+- Web can render Confirm / Reject using polling data when websocket is disconnected or unavailable.
+
+### Payment Status API Change
+
+Endpoint:
+
+```http
+GET /api/payment/status/{paymentId}
+```
+
+When status is `PHONEPE_MATCHED_WAITING_CONFIRMATION`, response `data` now includes:
+
+```json
+{
+  "paymentId": "PAY-...",
+  "terminalId": "TERM-...",
+  "amount": 500.00,
+  "status": "PHONEPE_MATCHED_WAITING_CONFIRMATION",
+  "payerName": "Rahul",
+  "notificationId": 501,
+  "message": "PhonePe payment received. Please confirm after checking customer."
+}
+```
+
+### Web UI Required Change
+
+When polling returns:
+
+```text
+PHONEPE_MATCHED_WAITING_CONFIRMATION
+```
+
+the cashier web screen should:
+
+- Show PhonePe confirmation panel.
+- Display `notificationId`, `amount`, `payerName`, and `message` from the status response.
+- Enable Confirm only when `notificationId` is present.
+- Enable Reject only when `notificationId` is present.
+
+Confirm request:
+
+```http
+POST /api/payments/{paymentId}/phonepe/confirm
+```
+
+```json
+{
+  "cashierId": 10,
+  "notificationId": 501
+}
+```
+
+Reject request:
+
+```http
+POST /api/payments/{paymentId}/phonepe/reject
+```
+
+```json
+{
+  "cashierId": 10,
+  "notificationId": 501,
+  "reason": "Not my customer"
+}
+```
+
+### Android Behavior
+
+- Android sends the PhonePe notification payload to backend.
+- Android does not show Confirm / Reject.
+- Android waits for the final backend status update after cashier confirmation or rejection.
+
+### Database Change
+
+No database change for this entry.
+
+### Verification
+
+Command:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw -q -DskipTests compile
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw -q test
+```
+
+Result:
+
+```text
+BUILD SUCCESS
+```
+
+## 2026-06-25 11:49:46 IST - Department Dropdown API
+
+### Summary
+
+Added a backend endpoint for the UI department dropdown so the application can fetch the allowed department names and codes from the server.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/controller/EnterpriseController.java`
+- `src/main/java/com/acme/PayNotify/dto/DepartmentResponse.java`
+- `src/main/java/com/acme/PayNotify/service/EnterpriseService.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- Added `GET /api/enterprise/departments`.
+- The endpoint returns the fixed department list used by enterprise creation validation.
+- The UI can use `department` as the display/value label and `departmentCode` as the numeric code.
+- Current dropdown options are `PADM=1`, `INFINITY=2`, and `INSIGHT=3`.
+
+### Department Dropdown API
+
+Endpoint:
+
+```http
+GET /api/enterprise/departments
+```
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Departments fetched successfully",
+  "data": [
+    {
+      "department": "PADM",
+      "departmentCode": 1
+    },
+    {
+      "department": "INFINITY",
+      "departmentCode": 2
+    },
+    {
+      "department": "INSIGHT",
+      "departmentCode": 3
+    }
+  ]
+}
+```
+
+### UI Usage
+
+Use the response `data` array to render the department dropdown. When creating an enterprise, send either the selected `department`, the selected `departmentCode`, or both values to `/api/enterprise/create`.
+
+Recommended create request after dropdown selection:
+
+```json
+{
+  "enterpriseCode": "PADM001",
+  "enterpriseName": "PADM Enterprise",
+  "department": "PADM",
+  "departmentCode": 1,
+  "liveFrom": "2026-06-25T00:00:00.000+00:00"
+}
+```
+
+### Database Change
+
+No database change for this entry.
+
+### Verification
+
+Command:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result:
+
+```text
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+## 2026-06-25 11:46:25 IST - User Entered Enterprise Code and Department Fields
+
+### Summary
+
+Updated enterprise creation so the client enters the `enterpriseCode` instead of the backend generating it. Added department tracking for the three server departments: `PADM`, `INFINITY`, and `INSIGHT`.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/entity/EnterpriseMaster.java`
+- `src/main/java/com/acme/PayNotify/dto/CreateEnterpriseRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/CreateEnterpriseResponse.java`
+- `src/main/java/com/acme/PayNotify/dto/EnterpriseValidationResponse.java`
+- `src/main/java/com/acme/PayNotify/service/EnterpriseService.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- `/api/enterprise/create` no longer generates `enterpriseCode`.
+- `enterpriseCode` is now required in the create-enterprise request.
+- The backend trims and stores `enterpriseCode` in uppercase.
+- Duplicate `enterpriseCode` values are rejected with `Enterprise code already exists`.
+- Enterprise creation now stores `department` and `departmentCode`.
+- Valid departments are `PADM`, `INFINITY`, and `INSIGHT`.
+- Valid department codes are `1`, `2`, and `3`.
+- Department mapping is fixed as `PADM=1`, `INFINITY=2`, `INSIGHT=3`.
+- The create request may send `department`, `departmentCode`, or both.
+- If both `department` and `departmentCode` are sent, they must match.
+- Enterprise validation responses now include `department` and `departmentCode` when the enterprise exists.
+
+### Create Enterprise API
+
+Endpoint:
+
+```http
+POST /api/enterprise/create
+Content-Type: application/json
+```
+
+Request body using department name:
+
+```json
+{
+  "enterpriseCode": "PADM001",
+  "enterpriseName": "PADM Enterprise",
+  "department": "PADM",
+  "liveFrom": "2026-06-25T00:00:00.000+00:00"
+}
+```
+
+Request body using department code:
+
+```json
+{
+  "enterpriseCode": "INFINITY001",
+  "enterpriseName": "Infinity Enterprise",
+  "departmentCode": 2,
+  "liveFrom": "2026-06-25T00:00:00.000+00:00"
+}
+```
+
+Request body using both department and department code:
+
+```json
+{
+  "enterpriseCode": "INSIGHT001",
+  "enterpriseName": "Insight Enterprise",
+  "department": "INSIGHT",
+  "departmentCode": 3,
+  "liveFrom": "2026-06-25T00:00:00.000+00:00"
+}
+```
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Enterprise created successfully",
+  "data": {
+    "id": 1,
+    "enterpriseCode": "PADM001",
+    "enterpriseName": "PADM Enterprise",
+    "department": "PADM",
+    "departmentCode": 1,
+    "isActive": true,
+    "liveFrom": "2026-06-25T00:00:00.000+00:00",
+    "createdAt": "2026-06-25T06:16:25.000+00:00"
+  }
+}
+```
+
+Validation error response examples:
+
+```json
+{
+  "success": false,
+  "message": "Enterprise code is required",
+  "data": null
+}
+```
+
+```json
+{
+  "success": false,
+  "message": "Invalid department. Allowed values are PADM, INFINITY or INSIGHT",
+  "data": null
+}
+```
+
+```json
+{
+  "success": false,
+  "message": "Department and department code do not match",
+  "data": null
+}
+```
+
+### Validate Enterprise API
+
+Endpoint:
+
+```http
+POST /api/enterprise/validate
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "enterpriseCode": "PADM001"
+}
+```
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Enterprise validation completed",
+  "data": {
+    "valid": true,
+    "enterpriseCode": "PADM001",
+    "enterpriseName": "PADM Enterprise",
+    "department": "PADM",
+    "departmentCode": 1,
+    "status": "VALID",
+    "message": "Enterprise validated successfully"
+  }
+}
+```
+
+### Database Change
+
+The `enterprise_master` table now has these new columns:
+
+```sql
+department varchar(50) null;
+department_code int null;
+```
+
+The columns are nullable so existing enterprise rows do not break during schema update. New enterprise creation validates and stores these fields.
+
+### Verification
+
+Command:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result:
+
+```text
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+## 2026-06-25 11:40:03 IST - Device Registration Password and Device Name Login
+
+### Summary
+
+Updated device authentication so registration collects a password and login no longer requires enterprise code. Login now uses `deviceName` and `password`.
+
+### Affected Files
+
+- `src/main/java/com/acme/PayNotify/dto/DeviceRegistrationRequest.java`
+- `src/main/java/com/acme/PayNotify/dto/DeviceLoginRequest.java`
+- `src/main/java/com/acme/PayNotify/entity/UserDevice.java`
+- `src/main/java/com/acme/PayNotify/repository/UserDeviceRepository.java`
+- `src/main/java/com/acme/PayNotify/service/DeviceRegistrationService.java`
+- `CHANGE_REPORT.md`
+
+### Behavior Changes
+
+- Registration still validates `enterpriseCode`.
+- Registration now requires `password`.
+- Registration now requires `deviceName`, and `deviceName` must be unique because login uses it.
+- Password is stored as a PBKDF2 hash in `user_device.password_hash`; the plain password is not stored.
+- Login now requires only `deviceName` and `password`.
+- Login no longer accepts or requires `enterpriseCode`.
+- Login no longer accepts or requires `deviceIdentifier`.
+- Existing devices without a password hash must be registered again with the same enterprise code, device identifier, role, device name, and a new password before they can log in with device name and password.
+
+### Register Device API
+
+Endpoint:
+
+```http
+POST /api/device/register
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "enterpriseCode": "ENT12345",
+  "deviceName": "Counter 1",
+  "role": "CASHIER",
+  "deviceIdentifier": "android-device-unique-id",
+  "password": "device-password"
+}
+```
+
+Required fields:
+
+- `enterpriseCode`: Used only during registration to validate the enterprise.
+- `deviceName`: Required and must be unique because login uses this field.
+- `role`: Allowed values are `OWNER` or `CASHIER`.
+- `deviceIdentifier`: Unique device identifier for the physical device.
+- `password`: Required. The backend stores a password hash, not the plain password.
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Device registration completed",
+  "data": {
+    "deviceId": 1,
+    "enterpriseCode": "ENT12345",
+    "enterpriseName": "Demo Enterprise",
+    "role": "CASHIER",
+    "terminalId": "TERM-1782360000000",
+    "deviceIdentifier": "android-device-unique-id",
+    "deviceName": "Counter 1",
+    "status": "REGISTERED"
+  }
+}
+```
+
+Already registered response:
+
+```json
+{
+  "success": true,
+  "message": "Device registration completed",
+  "data": {
+    "deviceId": 1,
+    "enterpriseCode": "ENT12345",
+    "enterpriseName": "Demo Enterprise",
+    "role": "CASHIER",
+    "terminalId": "TERM-1782360000000",
+    "deviceIdentifier": "android-device-unique-id",
+    "deviceName": "Counter 1",
+    "status": "ALREADY_REGISTERED"
+  }
+}
+```
+
+Validation error response examples:
+
+```json
+{
+  "success": false,
+  "message": "Password is required",
+  "data": null
+}
+```
+
+```json
+{
+  "success": false,
+  "message": "Device name is already registered",
+  "data": null
+}
+```
+
+### Login Device API
+
+Endpoint:
+
+```http
+POST /api/device/login
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "deviceName": "Counter 1",
+  "password": "device-password"
+}
+```
+
+Required fields:
+
+- `deviceName`: Registered device name.
+- `password`: Registered device password.
+
+Removed login fields:
+
+- `enterpriseCode` is no longer required for login.
+- `deviceIdentifier` is no longer required for login.
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Device login successful",
+  "data": {
+    "deviceId": 1,
+    "enterpriseCode": "ENT12345",
+    "enterpriseName": "Demo Enterprise",
+    "role": "CASHIER",
+    "terminalId": "TERM-1782360000000",
+    "deviceIdentifier": "android-device-unique-id",
+    "deviceName": "Counter 1",
+    "status": "LOGIN_SUCCESS"
+  }
+}
+```
+
+Invalid login response:
+
+```json
+{
+  "success": false,
+  "message": "Invalid device name or password",
+  "data": null
+}
+```
+
+Inactive device response:
+
+```json
+{
+  "success": false,
+  "message": "Device is inactive. Please contact admin.",
+  "data": null
+}
+```
+
+### Database Change
+
+The `user_device` table now has this new column:
+
+```sql
+password_hash varchar(255) null
+```
+
+The column is nullable so existing devices do not break during schema update. Existing devices that do not have a password hash should be registered again with the same enterprise code, device identifier, role, device name, and new password before they can log in with device name and password.
+
+### Verification
+
+Command:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test
+```
+
+Result:
+
+```text
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+Note:
+
+The system `java` command points to Java 8, but this Spring Boot 4 project requires a newer JDK. Verification was run with `JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64`.
